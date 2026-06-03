@@ -211,6 +211,26 @@ class HarmonyTextStreamer:
 
 # SSM (State Space Model) architectures that don't use traditional KV cache.
 # These models benefit from use_cache=False since they maintain internal state differently.
+
+# Model type values from transformers config (model.config.model_type)
+# This is more reliable than name matching as suggested by reviewer.
+_SSM_MODEL_TYPES = frozenset({
+    "mamba",
+    "mamba2",
+    "falcon_mamba",
+    "falcon_h1",
+    "jamba",
+    "zamba",
+    "zamba2",
+    "nemotron_h",
+    "nemotron_nas",
+    "lfm",
+    "lfm2",
+    "granite_hybrid",
+    "granitemoehybrid",
+})
+
+# Fallback substrings for name-based detection (when config is unavailable)
 _SSM_MODEL_SUBSTRINGS = (
     "nemotron_h",
     "nemotron-h",
@@ -252,20 +272,43 @@ def _extract_model_identifier(model_name: str) -> str:
     return model_name
 
 
-def _is_ssm_model(model_name: str) -> bool:
+def _is_ssm_by_config(model) -> bool:
+    """Check if a model is SSM by examining model.config.model_type.
+
+    This is the preferred method as it's more reliable than name matching.
+    Returns False if config is unavailable.
+    """
+    try:
+        model_type = getattr(getattr(model, "config", None), "model_type", None)
+        if model_type:
+            return model_type.lower() in _SSM_MODEL_TYPES
+    except Exception:
+        pass
+    return False
+
+
+def _is_ssm_model(model_name: str, model=None) -> bool:
     """Check if a model is an SSM (State Space Model) architecture.
 
     SSM models like Mamba, LFM, NemotronH, FalconH1, and Jamba use state-based
     recurrence rather than attention-based KV caching. They benefit from
     use_cache=False during generation since they don't need KV cache management.
 
-    Note: Only checks the model identifier (not full path) to avoid false
-    positives from paths like '/home/mamba/models/llama'.
+    Args:
+        model_name: The model name/path (used as fallback for name matching)
+        model: Optional model object to check config.model_type (preferred)
+
+    Note: Prefers checking model.config.model_type when model is provided,
+    falls back to name matching otherwise.
     """
+    # Prefer config check when model is available (more reliable)
+    if model is not None and _is_ssm_by_config(model):
+        return True
+
     if not model_name:
         return False
 
-    # Extract just the model identifier to avoid false positives from paths
+    # Fallback to name-based detection
     identifier = _extract_model_identifier(model_name)
     identifier_lower = identifier.lower()
 
@@ -1251,7 +1294,7 @@ class InferenceBackend:
             )
 
             # SSM models (Mamba, LFM, etc.) don't use traditional KV cache
-            use_cache = not _is_ssm_model(self.active_model_name)
+            use_cache = not _is_ssm_model(self.active_model_name, model)
 
             generation_kwargs = dict(
                 **inputs,
@@ -1392,7 +1435,7 @@ class InferenceBackend:
             )
 
             # SSM models (Mamba, LFM, etc.) don't use traditional KV cache
-            use_cache = not _is_ssm_model(self.active_model_name)
+            use_cache = not _is_ssm_model(self.active_model_name, model)
 
             # Notebook uses do_sample=False for ASR (greedy decoding for accuracy)
             generation_kwargs = dict(
@@ -1546,7 +1589,7 @@ class InferenceBackend:
                 )
 
             # SSM models (Mamba, LFM, etc.) don't use traditional KV cache
-            use_cache = not _is_ssm_model(self.active_model_name)
+            use_cache = not _is_ssm_model(self.active_model_name, model)
 
             generation_kwargs = dict(
                 **inputs,
@@ -1731,7 +1774,7 @@ class InferenceBackend:
         attention_mask = torch.ones_like(input_ids)
 
         # SSM models (Mamba, LFM, etc.) don't use traditional KV cache
-        use_cache = not _is_ssm_model(self.active_model_name)
+        use_cache = not _is_ssm_model(self.active_model_name, model)
 
         generated = model.generate(
             input_ids = input_ids,
